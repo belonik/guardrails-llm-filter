@@ -58,13 +58,16 @@ func TestExtractRequestContent(t *testing.T) {
 			name: "hosted MCP tool: operational fields are left alone",
 			// server_url/headers are consumed by the provider to reach the MCP
 			// server; masking them breaks the tool instead of protecting it.
-			// Only the description (prompt text) is scanned.
+			// Only the model-visible prose is scanned: `description` and the MCP
+			// tool's second description, `server_description`.
 			body: `{"input":"hi","tools":[{
 				"type":"mcp","server_label":"acme","server_url":"https://mcp.acme.internal/sse",
 				"headers":{"Authorization":"Bearer sk-acme-0123456789"},
+				"server_description":"Acme HR server, contact user@example.com",
 				"description":"Acme tools, owner user@example.com"}]}`,
 			want: []llmutils.ContentField{
 				{Path: "tools.0.description", Value: "Acme tools, owner user@example.com"},
+				{Path: "tools.0.server_description", Value: "Acme HR server, contact user@example.com"},
 				{Path: "input", Value: "hi"},
 			},
 		},

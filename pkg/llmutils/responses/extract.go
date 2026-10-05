@@ -48,10 +48,13 @@ func ExtractRequestContent(body []byte) ([]llmutils.ContentField, error) {
 
 	// Tool definitions first: their placeholder numbers then depend only on the
 	// tool block and not on the conversation length, so the masked tool block
-	// stays byte-identical across turns.
+	// stays byte-identical across turns. `server_description` is the MCP tool's
+	// second model-visible description; it is listed next to `description` so the
+	// two are numbered together.
 	result.Get("tools").ForEach(func(i, tool gjson.Result) bool {
 		fields = append(fields,
-			llmutils.CollectToolDefinitionFields(tool, "tools."+i.String(), "parameters")...)
+			llmutils.CollectToolDefinitionFields(tool, "tools."+i.String(), "parameters",
+				"description", "server_description")...)
 		return true
 	})
 

@@ -95,6 +95,27 @@ func TestCollectToolDefinitionFields(t *testing.T) {
 		assert.Empty(t, CollectToolDefinitionFields(tool, "tools.0", "parameters"))
 	})
 
+	t.Run("extra description keys are collected in the order given", func(t *testing.T) {
+		// The Responses dialect passes server_description alongside description:
+		// both are model-visible prose on an MCP tool, and the order fixes their
+		// placeholder numbering.
+		tool := gjson.Parse(`{
+			"type":"mcp",
+			"server_url":"https://mcp.acme.internal/sse",
+			"description":"Acme tools, owner <EMAIL_7>",
+			"server_description":"Acme HR server, contact <EMAIL_8>"
+		}`)
+
+		fields := CollectToolDefinitionFields(tool, "tools.0", "parameters", "description", "server_description")
+		assert.Equal(t, []string{"tools.0.description", "tools.0.server_description"}, fieldPaths(fields))
+		assert.Equal(t, "Acme HR server, contact <EMAIL_8>", fieldValue(t, fields, "tools.0.server_description"))
+
+		// The default stays exactly `description`, so the other dialects gain no
+		// surprises from a field their API does not define.
+		fields = CollectToolDefinitionFields(tool, "tools.0", "parameters")
+		assert.Equal(t, []string{"tools.0.description"}, fieldPaths(fields))
+	})
+
 	t.Run("a property named like a keyword is treated as a schema", func(t *testing.T) {
 		// Under `properties` the keys are property names: a property called
 		// "description" must be walked as a subschema, not harvested as text.

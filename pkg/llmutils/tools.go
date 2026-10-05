@@ -8,10 +8,15 @@ import (
 )
 
 // CollectToolDefinitionFields returns the scannable text of a single tool (a.k.a.
-// function) definition: its `description` plus the natural-language and example
-// text inside its JSON Schema. schemaKey names that schema in the caller's
-// dialect — "input_schema" for Anthropic Messages, "parameters" for the OpenAI
-// chat/completions and Responses APIs.
+// function) definition: its prose descriptions plus the natural-language and
+// example text inside its JSON Schema. schemaKey names that schema in the
+// caller's dialect — "input_schema" for Anthropic Messages, "parameters" for the
+// OpenAI chat/completions and Responses APIs.
+//
+// descriptionKeys names the fields holding the tool's prose. Callers pass
+// nothing for the standard `description`; the Responses dialect also passes
+// `server_description`, which is the MCP tool's second, equally model-visible
+// description (see the OpenAI Responses tool schema).
 //
 // Tool definitions are part of the prompt: the model reads every description and
 // example, so a default e-mail, an enum of real client names or a webhook URL
@@ -28,11 +33,16 @@ import (
 //   - machine-facing schema keywords (`type`, `format`, `pattern`, `$ref`,
 //     `required`, ...): not natural language, and rewriting them would change
 //     the contract the model is asked to satisfy.
-func CollectToolDefinitionFields(tool gjson.Result, base, schemaKey string) []ContentField {
-	var fields []ContentField
+func CollectToolDefinitionFields(tool gjson.Result, base, schemaKey string, descriptionKeys ...string) []ContentField {
+	if len(descriptionKeys) == 0 {
+		descriptionKeys = []string{"description"}
+	}
 
-	if d := tool.Get("description"); d.Type == gjson.String && d.String() != "" {
-		fields = append(fields, ContentField{Path: base + ".description", Value: d.String()})
+	var fields []ContentField
+	for _, key := range descriptionKeys {
+		if d := tool.Get(key); d.Type == gjson.String && d.String() != "" {
+			fields = append(fields, ContentField{Path: base + "." + EscapePathKey(key), Value: d.String()})
+		}
 	}
 	if schema := tool.Get(schemaKey); schema.IsObject() {
 		fields = append(fields, collectSchemaTextFields(schema, base+"."+schemaKey)...)

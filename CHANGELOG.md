@@ -33,7 +33,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`description`, `title`, `default`, `const`, `enum`, `examples`) in
   `tools[i].input_schema` (Anthropic), `tools[i].function.parameters` and the
   legacy `functions[i].parameters` (chat/completions) and `tools[i].parameters`
-  (Responses). A tool definition is prompt text the model reads on every turn, so
+  (Responses), plus the Responses MCP tool's second model-visible description
+  `server_description`. A tool definition is prompt text the model reads on every
+  turn, so
   a default e-mail, an enum of real client names or a webhook URL with
   credentials used to reach the provider unmasked — and did so on every request
   of a conversation. Left alone by design: `name` (echoed back in
