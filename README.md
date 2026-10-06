@@ -273,6 +273,7 @@ alexen2/alrosait нет.</sub>
 | `GUARDRAILS_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `GUARDRAILS_LOG_FORMAT` | `json` | `json` \| `text` |
 | `GUARDRAILS_METRICS_PORT` | `9090` | порт метрик Prometheus |
+| `GUARDRAILS_METRICS_SUMMARY_SOURCE` | `auto` | источник lifetime-счётчиков для `GET /v1/metrics/summary`: `auto` (общий стор при `redis`/`postgres`, иначе локальный gatherer), `store`, `local`. Латенси всегда per-replica |
 | `GUARDRAILS_GRPC_ADDR` | `:9000` | management gRPC-адрес (`GuardrailsApi`); REST-API проксирует на него |
 | `GUARDRAILS_GRPC_SECURE` | `false` | self-signed TLS на management gRPC-listener; по умолчанию выкл (API рассчитан на работу внутри кластера) |
 | `GUARDRAILS_GRPC_MAX_MESSAGE_BYTES` | `0` | лимит одного gRPC-сообщения management API: приём и отправка на gRPC-сервере плюс клиентские call options grpc-gateway. `0` — встроенные лимиты grpc-go (4 MiB на приём). Поднимите, если крупный ответ `ListAuditRecords`/`Scan` падает с `ResourceExhausted` |
