@@ -116,6 +116,6 @@ func truncateAll(t *testing.T, ctx context.Context, dsn string) {
 	require.NoError(t, err)
 	defer pool.Close()
 	_, err = pool.Exec(ctx,
-		`TRUNCATE guardrails_rules, guardrails_disabled_rules, guardrails_settings, guardrails_masking_state, guardrails_audit`)
+		`TRUNCATE guardrails_rules, guardrails_disabled_rules, guardrails_settings, guardrails_masking_state, guardrails_audit, guardrails_counters`)
 	require.NoError(t, err)
 }
