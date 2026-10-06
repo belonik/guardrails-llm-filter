@@ -47,6 +47,7 @@ type App struct {
 	metricsServer   *http.Server
 	gatewayServer   *http.Server
 	apiServer       *http.Server
+	engineServer    *http.Server
 	grpcServer      *grpc.Server
 	grpcController  *api.Controller
 	metricsGatherer prometheus.Gatherer
@@ -359,10 +360,10 @@ func (e *App) Gateway() *gateway.Handler {
 	if err != nil {
 		panic(fmt.Errorf("create gateway handler: %w", err))
 	}
-		if e.cfg.Upstream.BaseURL == "" && len(e.cfg.Upstream.PathBaseURLs) == 0 {
-			logging.Info(context.Background(), "No upstream configured — gateway (data-plane proxy) disabled. Management API + scan endpoint remain active.")
-			return nil
-		}
+	if e.cfg.Upstream.BaseURL == "" && len(e.cfg.Upstream.PathBaseURLs) == 0 {
+		logging.Info(context.Background(), "No upstream configured — gateway (data-plane proxy) disabled. Management API + scan endpoint remain active.")
+		return nil
+	}
 	e.gateway = gw
 	return e.gateway
 }
@@ -373,6 +374,12 @@ func (e *App) Gateway() *gateway.Handler {
 func (e *App) GatewayServer() *http.Server {
 	if e.gatewayServer != nil {
 		return e.gatewayServer
+	}
+	// The data plane can be switched off entirely (GUARDRAILS_DATA_PLANE_ENABLED),
+	// which also drops the upstream requirement: the process then serves only the
+	// engine API and/or the management API.
+	if !e.cfg.DataPlaneEnabled {
+		return nil
 	}
 	gw := e.Gateway()
 	if gw == nil {
@@ -423,16 +430,18 @@ func (e *App) Start(ctx context.Context) error {
 			"retention", e.cfg.Audit.Retention.String())
 	}
 
-		if gatewaySrv := e.GatewayServer(); gatewaySrv != nil {
-			go func() {
-				logging.Info(ctx, "Starting gateway server", "addr", gatewaySrv.Addr, "upstream", e.cfg.Upstream.BaseURL)
-				if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logging.Error(ctx, "gateway server error", err)
-				}
-			}()
-		} else {
-			logging.Info(ctx, "Gateway server skipped (no upstream configured) — management API + scan endpoint are active")
-		}
+	if gatewaySrv := e.GatewayServer(); gatewaySrv != nil {
+		go func() {
+			logging.Info(ctx, "Starting gateway server", "addr", gatewaySrv.Addr, "upstream", e.cfg.Upstream.BaseURL)
+			if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logging.Error(ctx, "gateway server error", err)
+			}
+		}()
+	} else if !e.cfg.DataPlaneEnabled {
+		logging.Info(ctx, "Data plane disabled; no gateway listener started (GUARDRAILS_DATA_PLANE_ENABLED=false)")
+	} else {
+		logging.Info(ctx, "Gateway server skipped (no upstream configured) — management API + scan endpoint are active")
+	}
 
 	go func() {
 		logging.Info(ctx, "Starting metrics server", "port", e.cfg.MetricsPort)
@@ -464,6 +473,22 @@ func (e *App) Start(ctx context.Context) error {
 		}()
 	}
 
+	// Engine-only API: a separate, token-authenticated listener for callers that
+	// already own a gateway and want the masking engine as a component. Bound
+	// explicitly so a busy address fails the boot instead of only being logged.
+	if engineSrv := e.EngineServer(); engineSrv != nil {
+		engineLis, lisErr := net.Listen("tcp", engineSrv.Addr)
+		if lisErr != nil {
+			return fmt.Errorf("listen engine API on %s: %w", engineSrv.Addr, lisErr)
+		}
+		go func() {
+			logging.Info(ctx, "Starting engine API server", "addr", engineSrv.Addr)
+			if serveErr := engineSrv.Serve(engineLis); serveErr != nil && serveErr != http.ErrServerClosed {
+				logging.Error(ctx, "engine API server error", serveErr)
+			}
+		}()
+	}
+
 	// Background refresh converges replicas on API changes when the store
 	// backend is shared.
 	refreshCtx, cancelRefresh := context.WithCancel(context.Background())
@@ -488,11 +513,22 @@ func (e *App) Start(ctx context.Context) error {
 		// Shut the data plane first so no new masking work starts, then the
 		// ops/control servers. Shutdown drains in-flight requests (bounded by
 		// shutdownCtx), including long-lived SSE responses.
-		gatewayErr := e.GatewayServer().Shutdown(shutdownCtx)
+		var gatewayErr error
+		if e.gatewayServer != nil {
+			gatewayErr = e.gatewayServer.Shutdown(shutdownCtx)
+		}
 
 		var apiErr error
 		if e.apiServer != nil {
 			apiErr = e.apiServer.Shutdown(shutdownCtx)
+		}
+
+		// Drain the engine API before the store closes: /v1/mask writes masking
+		// state, so an in-flight call must finish or the caller would hold
+		// masked text that can no longer be unmasked.
+		var engineErr error
+		if e.engineServer != nil {
+			engineErr = e.engineServer.Shutdown(shutdownCtx)
 		}
 
 		// Gracefully stop the management gRPC server, bounded by shutdownCtx: if
@@ -529,7 +565,7 @@ func (e *App) Start(ctx context.Context) error {
 			storeErr = e.store.Close()
 		}
 
-		return multierr.Combine(gatewayErr, apiErr, metricsErr, storeErr)
+		return multierr.Combine(gatewayErr, apiErr, engineErr, metricsErr, storeErr)
 	}
 
 	health.SetLiveness(true)

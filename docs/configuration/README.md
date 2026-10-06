@@ -50,6 +50,10 @@ env-дефолтах (кастомные правила — только фай�
 | `GUARDRAILS_GRPC_ADDR` | `:9000` | management gRPC-адрес (`GuardrailsApi`); REST-API проксирует на него |
 | `GUARDRAILS_GRPC_SECURE` | `false` | self-signed TLS на management gRPC-listener (`pkg/tlsutils`); по умолчанию выкл — API рассчитан на работу внутри кластера |
 | `GUARDRAILS_GRPC_MAX_MESSAGE_BYTES` | `0` | лимит одного gRPC-сообщения management API: приём и отправка на gRPC-сервере плюс клиентские call options grpc-gateway. `0` — встроенные лимиты grpc-go (4 MiB на приём). Поднимите, если крупный ответ `ListAuditRecords`/`Scan` падает с `ResourceExhausted` |
+| `GUARDRAILS_ENGINE_API_ADDR` | — | адрес engine-only API (`/v1/mask`, `/v1/unmask`); пусто отключает листенер. Контракт — [docs/api/engine.md](../api/engine.md) |
+| `GUARDRAILS_ENGINE_API_TOKEN` | — | bearer-токен engine API; **обязателен**, если задан адрес — `/v1/unmask` возвращает оригиналы значений |
+| `GUARDRAILS_DATA_PLANE_ENABLED` | `true` | `false` не поднимает gateway и снимает требование `GUARDRAILS_UPSTREAM_BASE_URL` (компонентный деплой) |
+| `GUARDRAILS_API_IGNORE_UNKNOWN_FIELDS` | `false` | `true` — management REST игнорирует незнакомые поля вместо 400 |
 | `GUARDRAILS_UPSTREAM_BASE_URL` | — | базовый URL upstream LLM-провайдера; путь запроса дописывается к нему. **Обязателен**, если не задан `PATH_BASE_URLS` (без обоих — отказ старта). Валидируется на старте: абсолютный http(s)-URL с хостом (как и значения `PATH_BASE_URLS`) |
 | `GUARDRAILS_UPSTREAM_TIMEOUT` | `120s` | таймаут заголовков ответа upstream (время до первого байта); не ограничивает стриминговое тело; `0` отключает |
 | `GUARDRAILS_UPSTREAM_MAX_IDLE_CONNS` | `100` | пул соединений upstream: максимум idle-соединений |

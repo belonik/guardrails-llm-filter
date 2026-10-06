@@ -75,10 +75,36 @@ type Config struct {
 	Guardrails Guardrails `envPrefix:""`
 	Store      Store      `envPrefix:"STORE_"`
 	API        API        `envPrefix:"API_"`
+	Engine     Engine     `envPrefix:"ENGINE_"`
 	UI         UI         `envPrefix:"UI_"`
 	Audit      Audit      `envPrefix:"AUDIT_"`
 	Metrics    Metrics    `envPrefix:"METRICS_"`
 	Upstream   Upstream   `envPrefix:"UPSTREAM_"`
+
+	// DataPlaneEnabled turns the data-plane proxy on. When false the service
+	// starts no gateway listener and does not require an upstream at all, so it
+	// can run purely as an engine behind a caller's own gateway. Default true
+	// keeps the previous behavior; an operator switching it off should leave
+	// some other surface enabled (GUARDRAILS_ENGINE_API_ADDR or
+	// GUARDRAILS_API_ADDR), otherwise the process has nothing to serve.
+	DataPlaneEnabled bool `env:"DATA_PLANE_ENABLED" envDefault:"true"`
+}
+
+// Engine configures the engine-only API: a separate, token-authenticated
+// listener that exposes masking and unmasking to a caller that already owns
+// authentication, routing and logging. See docs/api/engine.md for the contract.
+//
+// It is deliberately NOT on the management port, which is unauthenticated and
+// also carries the mutating rules/settings endpoints.
+type Engine struct {
+	// Addr is the listen address of the engine API; empty disables the listener.
+	Addr string `env:"API_ADDR"`
+
+	// Token is the bearer token required on every engine API request. It is
+	// required whenever Addr is set: /v1/unmask returns original sensitive
+	// values, so an unauthenticated listener would be an exfiltration hole.
+	// Compared in constant time and never logged.
+	Token string `env:"API_TOKEN"`
 }
 
 // MetricsSummarySource values. See Metrics.SummarySource.
@@ -256,6 +282,13 @@ type API struct {
 	// settings) with no token check, so it must be protected at the network
 	// layer (cluster-internal only, never public ingress).
 	Addr string `env:"ADDR" envDefault:":9080"`
+
+	// IgnoreUnknownFields makes the management REST facade tolerate fields it
+	// does not know, instead of rejecting the request with 400. Off by default
+	// (strict): a typo in a field name then fails loudly rather than being
+	// silently dropped. Turn it on when a generic caller sends a richer payload
+	// than this contract defines.
+	IgnoreUnknownFields bool `env:"IGNORE_UNKNOWN_FIELDS" envDefault:"false"`
 }
 
 // UI configures serving of the embedded management console (a static SPA) from
@@ -366,6 +399,13 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("%sMETRICS_SUMMARY_SOURCE must be one of %q, %q, %q; got %q",
 			EnvPrefix, MetricsSummaryAuto, MetricsSummaryStore, MetricsSummaryLocal, cfg.Metrics.SummarySource)
+	}
+	// The engine API hands back original sensitive values on /v1/unmask, so it
+	// must never come up without authentication. Fail the boot rather than
+	// expose an unauthenticated exfiltration endpoint.
+	if cfg.Engine.Addr != "" && cfg.Engine.Token == "" {
+		return nil, fmt.Errorf("%sENGINE_API_TOKEN is required when %sENGINE_API_ADDR is set (the engine API can unmask secrets)",
+			EnvPrefix, EnvPrefix)
 	}
 	// Header lookups are case-insensitive (net/http canonicalizes header
 	// names). Normalize the configured override header name so a mixed-case
