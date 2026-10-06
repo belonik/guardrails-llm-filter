@@ -1,0 +1,198 @@
+# Verification stand for the fixes merged into fork/main — NOT a production file.
+#
+# Topology:
+#
+#   test-fixes.sh ──:8080─► guardrails-1 ─┐
+#                 ──:8081─► guardrails-2 ─┼─► mock-llm (:8890, capture+echo)
+#                 ──:9080/9081 (management API + /v1/metrics/summary)
+#                 ──:9100/9101 (engine API, bearer token)
+#                          └──────────────┴─► postgres (shared store: rules,
+#                                              settings, audit, masking state,
+#                                              distributed counters)
+#
+# Two replicas on one shared store are the point: #23 (distributed masking
+# counters) can only be verified when two processes write to the same store and
+# /v1/metrics/summary must report the same lifetime numbers from both.
+#
+# The mock upstream CAPTURES every masked request body it receives and echoes it
+# back, so the tests can assert both "what the model saw" (no PII in
+# deploy/compose/capture/requests.jsonl) and "what the client got back"
+# (demasked round-trip).
+#
+#   cp .env.example .env
+#   ./test-fixes.sh --up        # builds images if needed, ups, runs the checks
+#
+# Ports are published on 127.0.0.1 only: the management API and the engine API
+# are reachable over loopback, never from the network. Same policy as the
+# production compose in the deploy repo.
+#
+# The runtime image is distroless (no shell, no curl), so guardrails has no
+# in-container healthcheck on purpose — readiness is asserted from the host by
+# test-fixes.sh via GET /v1/health on the management API.
+
+name: guardrails-verify
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Shared by both replicas. Anything that must differ per replica (published
+# ports, container name) is set on the service itself.
+x-guardrails-env: &guardrails-env
+  GUARDRAILS_LOG_LEVEL: ${GUARDRAILS_LOG_LEVEL:-info}
+  GUARDRAILS_LOG_FORMAT: text
+
+  # Same listen addresses inside every replica; only the host ports differ.
+  GUARDRAILS_LISTEN_ADDR: ":8080"
+  GUARDRAILS_API_ADDR: ":9080"
+  GUARDRAILS_METRICS_PORT: "9090"
+  GUARDRAILS_UI_ENABLED: "false"
+
+  # Data plane: clients talk to :8080, masked requests go to the capture/echo
+  # upstream. Overridable so the same stand can exercise the scan-only mode.
+  GUARDRAILS_DATA_PLANE_ENABLED: ${GUARDRAILS_DATA_PLANE_ENABLED:-true}
+  GUARDRAILS_UPSTREAM_BASE_URL: ${GUARDRAILS_UPSTREAM_BASE_URL:-http://mock-llm:8890}
+  GUARDRAILS_UPSTREAM_TIMEOUT: 60s
+
+  GUARDRAILS_ENABLED: "true"
+  GUARDRAILS_MODE: ${GUARDRAILS_MODE:-enforce}
+  GUARDRAILS_DATA_TYPES: "1,2,3,4,5,6"
+  GUARDRAILS_MAX_REQUEST_BYTES: "33554432"
+  GUARDRAILS_HEADERS_EXPOSE_TRIGGERED_RULES: "true"
+
+  # Shared store: rules, settings, audit, masking state AND (#23) the
+  # distributed counters.
+  GUARDRAILS_STORE_BACKEND: postgres
+  GUARDRAILS_STORE_POSTGRES_DSN: postgres://${POSTGRES_USER:-guardrails}:${POSTGRES_PASSWORD:-guardrails}@postgres:5432/${POSTGRES_DB:-guardrails}?sslmode=disable
+  GUARDRAILS_STORE_ENCRYPTION_ENABLED: ${GUARDRAILS_STORE_ENCRYPTION_ENABLED:-false}
+  GUARDRAILS_STORE_ENCRYPTION_KEY: ${GUARDRAILS_STORE_ENCRYPTION_KEY:-}
+
+  # #23: on postgres "auto" means the counters are mirrored into the shared
+  # store and read back, so both replicas report the same lifetime numbers.
+  GUARDRAILS_METRICS_SUMMARY_SOURCE: ${GUARDRAILS_METRICS_SUMMARY_SOURCE:-auto}
+
+  # #22: lift grpc-go's built-in 4 MiB receive limit on the management API.
+  GUARDRAILS_GRPC_MAX_MESSAGE_BYTES: ${GUARDRAILS_GRPC_MAX_MESSAGE_BYTES:-100000000}
+
+  # #41: engine-only API on its own listener with its own bearer token.
+  GUARDRAILS_ENGINE_API_ADDR: ":9100"
+  GUARDRAILS_ENGINE_API_TOKEN: ${GUARDRAILS_ENGINE_API_TOKEN:-stand-engine-token}
+
+  GUARDRAILS_AUDIT_ENABLED: "true"
+  GUARDRAILS_AUDIT_RETENTION: 24h
+  GUARDRAILS_AUDIT_MAX_ENTRIES: "100000"
+  GUARDRAILS_AUDIT_STORE_MASKED_TEXTS: "true"
+  GUARDRAILS_AUDIT_STORE_MASKED_RESPONSE_TEXTS: "true"
+  # Never `plain`/`encrypted` here: the stand stores fake data, but the setting
+  # is the dangerous one and the default must stay safe.
+  GUARDRAILS_AUDIT_STORE_ORIGINAL_TEXTS: "off"
+
+services:
+  guardrails-1:
+    image: ${GUARDRAILS_IMAGE:-guardrails-llm-filter:test}
+    container_name: guardrails-verify-1
+    restart: unless-stopped
+    environment:
+      <<: *guardrails-env
+    ports:
+      - "127.0.0.1:${GW1_PORT:-8080}:8080" # data plane
+      - "127.0.0.1:${API1_PORT:-9080}:9080" # management API + console + summary
+      - "127.0.0.1:${METRICS1_PORT:-9090}:9090" # Prometheus
+      - "127.0.0.1:${ENGINE1_PORT:-9100}:9100" # engine API (bearer)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-llm:
+        condition: service_started
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    networks: [verify]
+
+  guardrails-2:
+    image: ${GUARDRAILS_IMAGE:-guardrails-llm-filter:test}
+    container_name: guardrails-verify-2
+    restart: unless-stopped
+    environment:
+      <<: *guardrails-env
+    ports:
+      - "127.0.0.1:${GW2_PORT:-8081}:8080"
+      - "127.0.0.1:${API2_PORT:-9081}:9080"
+      - "127.0.0.1:${METRICS2_PORT:-9091}:9090"
+      - "127.0.0.1:${ENGINE2_PORT:-9101}:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-llm:
+        condition: service_started
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    networks: [verify]
+
+  # The "LLM": captures the masked request it receives, echoes it back.
+  # ./capture is bind-mounted so test-fixes.sh can read the masked bodies from
+  # the host (the container is distroless and has no shell to exec into).
+  mock-llm:
+    build:
+      context: ../../tests/e2e/upstream
+    image: ${GUARDRAILS_MOCK_IMAGE:-guardrails-mock-llm:test}
+    container_name: guardrails-verify-mock-llm
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: ":8890"
+      CAPTURE_FILE: /capture/requests.jsonl
+    volumes:
+      - ./capture:/capture
+    ports:
+      - "127.0.0.1:${MOCK_PORT:-8890}:8890"
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    networks: [verify]
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    container_name: guardrails-verify-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-guardrails}
+      POSTGRES_USER: ${POSTGRES_USER:-guardrails}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-guardrails}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-guardrails} -d ${POSTGRES_DB:-guardrails}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    networks: [verify]
+
+  # Optional: only started with `docker compose --profile redis up -d`.
+  # The stand uses postgres as the shared store; this exists to re-run the
+  # engine API and the counters against the other backend:
+  #   GUARDRAILS_STORE_BACKEND=redis
+  #   GUARDRAILS_STORE_REDIS_ADDR=redis:6379
+  redis:
+    image: redis:7-alpine
+    container_name: guardrails-verify-redis
+    profiles: [redis]
+    restart: unless-stopped
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    networks: [verify]
+
+volumes:
+  pgdata:
+    name: guardrails-verify-pgdata
+
+networks:
+  verify:
+    name: guardrails-verify
